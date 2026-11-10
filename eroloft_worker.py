@@ -44,6 +44,12 @@ class Worker:
         for item in (doc.get('result') or {}).get('items', []):
             row = from_2gis(item, self.config['city']) if isinstance(item, dict) else None
             if row:
+                from parser_2gis.contact_urls import telegram_bot_urls
+                if telegram_bot_urls(row):
+                    if self.history:
+                        self.history.remember(row)
+                    self.source['telegram_bots_excluded'] = self.source.get('telegram_bots_excluded', 0) + 1
+                    continue
                 # Save every read card, including websites and excluded contacts.
                 if self.history is None or self.history.remember(row):
                     self.merger.add(row)
@@ -121,7 +127,7 @@ class Worker:
             if self.cancelled():
                 self.source.update(status='cancelled', message='Остановлено')
                 status = 'cancelled'
-            elif not self.merger.rows and not (self.source['history_skipped'] or self.source['history_busy']):
+            elif not self.merger.rows and not (self.source['history_skipped'] or self.source['history_busy'] or self.source.get('telegram_bots_excluded')):
                 self.source.update(status='error', message=getattr(parser, 'renkai_stop_reason', '') or 'Карточки не получены. Проверьте доступ к 2ГИС или изменение разметки.')
                 status = 'error'
             else:
@@ -131,6 +137,8 @@ class Worker:
                 message += ' Пропущено из базы: %s.' % self.source['history_skipped']
                 if self.source['history_busy']:
                     message += ' Уже проверяются другим запуском: %s.' % self.source['history_busy']
+                if self.source.get('telegram_bots_excluded'):
+                    message += ' Telegram-боты исключены: %s.' % self.source['telegram_bots_excluded']
                 self.source.update(status='done', message=message)
                 status = 'done'
         except AccessBlocked as exc:

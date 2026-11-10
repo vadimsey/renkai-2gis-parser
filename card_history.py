@@ -52,7 +52,14 @@ class CardHistory:
                     path TEXT PRIMARY KEY,
                     fingerprint TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS exclusions (
+                    card_id TEXT PRIMARY KEY,
+                    reason TEXT NOT NULL,
+                    excluded_at REAL NOT NULL,
+                    evidence_url TEXT NOT NULL
+                );
             ''')
+        self.purge_bots()
 
     @contextmanager
     def connection(self):
@@ -74,6 +81,8 @@ class CardHistory:
             db.execute('BEGIN IMMEDIATE')
             if db.execute('SELECT 1 FROM cards WHERE card_id=?', (identity,)).fetchone():
                 return 'seen'
+            if db.execute('SELECT 1 FROM exclusions WHERE card_id=?', (identity,)).fetchone():
+                return 'seen'
             claim = db.execute('SELECT owner, expires FROM claims WHERE card_id=?', (identity,)).fetchone()
             if claim and claim[1] > now:
                 return 'busy'
@@ -84,6 +93,15 @@ class CardHistory:
     def _insert(db, row):
         identity = card_id(row)
         if not identity or not row.get('name'):
+            return False
+        from parser_2gis.contact_urls import telegram_bot_urls
+        bots = telegram_bot_urls(row)
+        if bots:
+            db.execute('INSERT OR REPLACE INTO exclusions VALUES (?,?,?,?)', (identity, 'telegram_bot', time.time(), bots[0]))
+            db.execute('DELETE FROM cards WHERE card_id=?', (identity,))
+            db.execute('DELETE FROM claims WHERE card_id=?', (identity,))
+            return False
+        if db.execute('SELECT 1 FROM exclusions WHERE card_id=?', (identity,)).fetchone():
             return False
         observed = row.get('_observed_at')
         observed = observed if isinstance(observed, (int, float)) else time.time()
@@ -99,6 +117,37 @@ class CardHistory:
             if identity:
                 db.execute('DELETE FROM claims WHERE card_id=?', (identity,))
         return added
+
+    def purge_bots(self):
+        removed = 0
+        from parser_2gis.contact_urls import telegram_bot_urls
+        with self.connection() as db:
+            for identity, raw in db.execute('SELECT card_id,record_json FROM cards').fetchall():
+                try:
+                    row = json.loads(raw)
+                    if telegram_bot_urls(row):
+                        self._insert(db, row)
+                        removed += 1
+                except (ValueError, TypeError):
+                    continue
+        return removed
+
+    def update_reviewed(self, row):
+        """Replace stale contact data after checking the original card again."""
+        identity = card_id(row)
+        if not identity:
+            return False
+        with self.connection() as db:
+            from parser_2gis.contact_urls import telegram_bot_urls
+            if telegram_bot_urls(row):
+                self._insert(db, row)
+                return False
+            if db.execute('SELECT 1 FROM exclusions WHERE card_id=?', (identity,)).fetchone():
+                return False
+            db.execute('UPDATE cards SET name=?,city=?,source_url=?,record_json=? WHERE card_id=?',
+                       (row['name'], row.get('city',''), row.get('sourceUrl',''), json.dumps(row,ensure_ascii=False), identity))
+            self._insert(db, row)
+        return True
 
     def release(self, owner):
         with self.connection() as db:

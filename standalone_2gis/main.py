@@ -16,6 +16,9 @@ if str(ROOT) not in sys.path:
 
 
 def classify(row):
+    from parser_2gis.contact_urls import telegram_bot_urls
+    if telegram_bot_urls(row):
+        return 'telegram_bot'
     card = row.get('card_check') or {}
     if row.get('websites') or card.get('websites') or card.get('has_website'):
         return 'website'
@@ -57,7 +60,8 @@ class Api:
         from card_history import CardHistory
         self.history = CardHistory(self.base / 'history.sqlite3')
         self.history.import_runs([self.base / 'runs'])
-        self.run_dir = None
+        previous = sorted((self.base / 'runs').glob('*/collected.json'), key=lambda p: p.stat().st_mtime, reverse=True)
+        self.run_dir = previous[0].parent if previous else None
         self.process = None
 
     def cities(self):
@@ -102,14 +106,16 @@ class Api:
         if not isinstance(rows, list): rows = []
         accepted = [r for r in rows if classify(r) == 'qualified']
         counts = {'all': len(rows), 'qualified': len(accepted), 'website': sum(classify(r) == 'website' for r in rows), 'unverified': sum(classify(r) == 'unverified' for r in rows)}
+        bot_count = sum(classify(r) == 'telegram_bot' for r in rows)
         running = self.process is not None and self.process.poll() is None
         status = worker.get('status', 'collecting' if running else 'error')
         if not running and status == 'collecting': status = 'error'
         source = worker.get('sources', {}).get('2gis', {})
+        bot_count = max(bot_count, int(source.get('telegram_bots_excluded', 0)))
         message = source.get('message') or ('Открываем 2ГИС…' if running else 'Рабочий процесс завершился без отчёта.')
         if source.get('status') == 'blocked': status = 'blocked'
         return {'status': status, 'running': running, 'message': message, 'counts': counts, 'rows': accepted, 'directory': str(self.run_dir),
-                'history': {'total':self.history.count(), 'skipped':source.get('history_skipped', 0)}}
+                'history': {'total':self.history.count(), 'skipped':source.get('history_skipped', 0)}, 'telegram_bots_excluded':bot_count}
 
     def stop(self):
         if self.run_dir and self.process and self.process.poll() is None:
@@ -149,6 +155,10 @@ def main():
             history = CardHistory(Path(folder) / 'history.sqlite3')
             assert history.remember({'source':'2gis', 'source_id':'1', 'name':'Smoke test'})
             assert CardHistory(history.path).claim('1', 'another-run') == 'seen'
+            bot = {'source':'2gis','source_id':'2','name':'Bot test','telegram':'https://t.me/ExampleBot'}
+            assert classify(bot) == 'telegram_bot'
+            assert not history.remember(bot)
+            assert history.count() == 1 and history.claim('2', 'another-run') == 'seen'
         assert snapshot_from_html('<html>missing data</html>', 'https://2gis.ru/') is None
         assert resolve_city('Нижний Новгород', 'krasnodar')['code'] == 'n_novgorod'
         Path(sys.argv[2]).write_text('imports ok; history ok; cities=' + str(len(russian_cities())), encoding='utf-8')
@@ -156,7 +166,7 @@ def main():
     import webview
     api = Api()
     ui = (Path(sys._MEIPASS) / 'standalone_2gis' / 'ui' if getattr(sys, 'frozen', False) else Path(__file__).parent / 'ui') / 'index.html'
-    window = webview.create_window('Renkai Parser 0.1.5', ui.as_uri(), js_api=api, width=1360, height=900, min_size=(980, 720), background_color='#f4f4f5')
+    window = webview.create_window('Renkai Parser 0.1.6', ui.as_uri(), js_api=api, width=1360, height=900, min_size=(980, 720), background_color='#f4f4f5')
     window.events.closing += api.stop
     if len(sys.argv) >= 3 and sys.argv[1] == '--ui-smoke-test':
         report = Path(sys.argv[2])

@@ -91,17 +91,19 @@ class Merger:
         return False
 
 def from_2gis(item,city=''):
-    from parser_2gis.contact_urls import messenger_kind
+    from parser_2gis.contact_urls import messenger_kind, is_telegram_bot_url
     identity=str(item.get('id') or '').split('_')[0]
     if not identity or not item.get('name'):return None
     contacts=[c for g in item.get('contact_groups',[]) or [] for c in g.get('contacts',[]) or [] if isinstance(c,dict)]
     phones=[c.get('value','') for c in contacts if c.get('type') in ('phone','tel')]
-    websites=[];vk='';telegram=''
+    websites=[];vk='';telegram='';telegram_links=[]
     for c in contacts:
+        telegram_links.extend(v for v in (c.get('url'), c.get('value')) if messenger_kind(v)=='telegram')
         u=c.get('url') or c.get('value') or ''
         kind=messenger_kind(u)
         if kind=='vk':vk=u
-        elif kind=='telegram':telegram=u
+        elif kind=='telegram':
+            telegram=u
         elif c.get('type')=='website' and u and not kind:
             # 2GIS can return a displayed domain without an explicit scheme.
             candidate=str(u).strip()
@@ -110,6 +112,7 @@ def from_2gis(item,city=''):
     complete=bool(contacts)
     return normalize({'source_id':identity,'name':item['name'],'city':city,'address':item.get('address_name',''),
           'sourceUrl':item.get('renkai_page_url') or 'https://2gis.ru/firm/'+identity,'phones':phones,'websites':websites,'vk':vk,'telegram':telegram,
+          'telegram_links':list(dict.fromkeys(telegram_links)), 'telegram_bots':[u for u in telegram_links if is_telegram_bot_url(u)],
           'rubrics':item.get('rubrics',[]),'service_evidence':item.get('renkai_service_evidence',[]),'card_check':{'scope':'2gis_card','complete':complete,'websites':websites,
           'transport':item.get('renkai_transport','catalog_api'),
           'has_website':bool(websites),
