@@ -21,8 +21,9 @@ def classify(row):
         return 'unverified'
     if row.get('websites') or card.get('websites') or card.get('has_website'):
         return 'website'
-    text = ' '.join([str(row.get('name') or ''), *(str(x) for x in row.get('rubrics', []))]).lower().replace('ё', 'е')
-    if not (re.search(r'(?:химчист|чистк|чисти|очист)', text) and re.search(r'(?:мебел|диван|матрас|кресел|кресл|стул|обивк)', text)):
+    from parser_2gis.furniture import furniture_service
+    if not furniture_service([row.get('name'), *row.get('rubrics', []),
+                              *(e.get('text') for e in row.get('service_evidence', []))]):
         return 'unverified'
     return 'qualified'
 
@@ -60,12 +61,20 @@ class Api:
         self.run_dir = None
         self.process = None
 
+    def cities(self):
+        from parser_2gis.cities import russian_cities
+        return russian_cities()
+
     def start(self, city, city_code, limit, visible):
         if self.process and self.process.poll() is None:
             return {'ok': False, 'error': 'Поиск уже запущен.'}
         city, city_code = str(city).strip()[:120], str(city_code).strip().lower()
-        if not city or not re.fullmatch(r'[a-z0-9-]{2,60}', city_code):
-            return {'ok': False, 'error': 'Укажите город и его код из адреса 2ГИС латиницей.'}
+        try:
+            from parser_2gis.cities import resolve_city
+            location = resolve_city(city, city_code)
+            city, city_code = location['name'], location['code']
+        except (ValueError, OSError) as exc:
+            return {'ok': False, 'error': str(exc)}
         try:
             limit = None if str(limit).strip() == '' else int(limit)
             if limit is not None and limit < 1:
@@ -83,7 +92,7 @@ class Api:
             self.process = subprocess.Popen(command, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), cwd=str(self.run_dir))
         except OSError as exc:
             return {'ok': False, 'error': str(exc)}
-        return {'ok': True}
+        return {'ok': True, 'city': city, 'city_code': city_code}
 
     def state(self):
         if not self.run_dir:
@@ -131,12 +140,16 @@ def main():
     if len(sys.argv) >= 3 and sys.argv[1] == '--smoke-test':
         from eroloft_worker import Worker
         from parser_2gis.parser import get_parser
-        Path(sys.argv[2]).write_text('imports ok', encoding='utf-8')
+        from parser_2gis.cities import russian_cities, resolve_city
+        from parser_2gis.parser.page_data import snapshot_from_html
+        assert snapshot_from_html('<html>missing data</html>', 'https://2gis.ru/') is None
+        assert resolve_city('Нижний Новгород', 'krasnodar')['code'] == 'n_novgorod'
+        Path(sys.argv[2]).write_text('imports ok; cities=' + str(len(russian_cities())), encoding='utf-8')
         return 0
     import webview
     api = Api()
     ui = (Path(sys._MEIPASS) / 'standalone_2gis' / 'ui' if getattr(sys, 'frozen', False) else Path(__file__).parent / 'ui') / 'index.html'
-    window = webview.create_window('Renkai Parser', ui.as_uri(), js_api=api, width=1360, height=900, min_size=(980, 720), background_color='#f4f4f5')
+    window = webview.create_window('Renkai Parser 0.1.3', ui.as_uri(), js_api=api, width=1360, height=900, min_size=(980, 720), background_color='#f4f4f5')
     window.events.closing += api.stop
     if len(sys.argv) >= 3 and sys.argv[1] == '--ui-smoke-test':
         report = Path(sys.argv[2])
@@ -144,7 +157,24 @@ def main():
             try:
                 if not window.events.loaded.wait(20):
                     raise RuntimeError('UI did not load')
-                result = window.evaluate_js("JSON.stringify({title:document.querySelector('h1').textContent,city:document.querySelector('#city').value,start:!!document.querySelector('#start'),export:!!document.querySelector('#export')})")
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
+                    if window.evaluate_js("document.querySelectorAll('#cityList option').length > 100"):
+                        break
+                    time.sleep(.2)
+                else:
+                    raise RuntimeError('City catalog did not load through the desktop bridge')
+                result = window.evaluate_js("""(() => {
+                    const input = document.querySelector('#city');
+                    input.value = 'Нижний Новгород'; input.dispatchEvent(new Event('input'));
+                    const cityCode = document.querySelector('#cityCode').value;
+                    input.value = 'Краснодар'; input.dispatchEvent(new Event('input'));
+                    return JSON.stringify({title:document.querySelector('h1').textContent,
+                        cities:document.querySelectorAll('#cityList option').length,
+                        testedCityCode:cityCode,start:!!document.querySelector('#start'),export:!!document.querySelector('#export')});
+                })()""")
+                if json.loads(result)['testedCityCode'] != 'n_novgorod':
+                    raise RuntimeError('City selection failed in the packaged desktop UI')
                 report.write_text(result, encoding='utf-8')
             except Exception:
                 report.write_text(traceback.format_exc(), encoding='utf-8')

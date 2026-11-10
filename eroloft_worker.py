@@ -3,7 +3,6 @@ import json
 import sys
 import time
 from pathlib import Path
-from urllib.parse import quote
 
 from hybrid_core import Merger, from_2gis
 from pipeline_worker import write_json
@@ -27,7 +26,7 @@ class Worker:
         write_json(self.folder / 'collected.json', self.merger.rows)
         write_json(self.folder / 'worker.json', {
             'status': status, 'seen': self.merger.seen, 'candidates': len(self.merger.rows),
-            'query_errors': int(self.source['status'] in ('error', 'blocked')),
+            'query_errors': int(self.source['status'] in ('error', 'blocked')) + int(self.source.get('skipped', 0)),
             'sources': {'2gis': self.source}, 'updated': time.time(),
             'note': 'Источник: карточки 2ГИС; наличие сайта проверяется по полученным контактам.'})
 
@@ -82,18 +81,20 @@ class Worker:
             executable = chrome_path()
             if not executable:
                 raise RuntimeError('Не найден Chrome или Edge.')
-            city_code = str(self.config.get('city_code') or '')
-            if not city_code or not all(c.isascii() and (c.isalnum() or c == '-') for c in city_code):
-                raise RuntimeError('Укажите корректный код города 2ГИС.')
-            url = 'https://2gis.ru/' + city_code + '/search/' + quote('химчистка мебели')
+            from parser_2gis.cities import resolve_city, furniture_search_url
+            location = resolve_city(self.config.get('city', ''), self.config.get('city_code', ''))
+            self.config.update(city=location['name'], city_code=location['code'])
+            url = furniture_search_url(location)
             options = ChromeOptions(binary_path=Path(executable), headless=not self.config.get('browser_visible', False), disable_images=False)
-            requested = self.config.get('pool', 50)
+            requested = self.config.get('pool')
             max_records = sys.maxsize if requested is None else max(int(requested), 1)
             parser = get_parser(url, options, ParserOptions(max_records=max_records, delay_between_clicks=1000))
             parser.renkai_access_check = self.check_access
             parser.renkai_cancelled = self.cancelled
             parser.renkai_progress = self.progress
+            parser.renkai_page_data = True
             parser.parse(self)
+            self.source['skipped'] = int(getattr(parser, 'renkai_skipped', 0))
             if self.cancelled():
                 self.source.update(status='cancelled', message='Остановлено')
                 status = 'cancelled'
@@ -101,7 +102,10 @@ class Worker:
                 self.source.update(status='error', message=getattr(parser, 'renkai_stop_reason', '') or 'Карточки не получены. Проверьте доступ к 2ГИС или изменение разметки.')
                 status = 'error'
             else:
-                self.source.update(status='done', message=getattr(parser, 'renkai_stop_reason', '') or 'Карточки получены; проверяем сайт и услугу.')
+                message = getattr(parser, 'renkai_stop_reason', '') or 'Получено уникальных карточек: %s.' % len(self.merger.rows)
+                if self.source['skipped']:
+                    message += ' Недоступно карточек: %s; они пропущены.' % self.source['skipped']
+                self.source.update(status='done', message=message)
                 status = 'done'
         except AccessBlocked as exc:
             self.source.update(status='blocked', message=str(exc))

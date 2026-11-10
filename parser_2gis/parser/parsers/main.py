@@ -152,6 +152,10 @@ class MainParser:
         Args:
             writer: Target file writer.
         """
+        if getattr(self, 'renkai_page_data', False):
+            from ..page_data import parse_page_data
+            return parse_page_data(self, writer)
+
         # Starting from page 6 and further
         # 2GIS redirects user to the beginning automatically (anti-bot protection).
         # If a page argument found in the URL, we should manually walk to it first.

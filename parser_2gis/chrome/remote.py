@@ -279,7 +279,7 @@ class ChromeRemote:
             self._requests = {}
 
     @wait_until_finished(timeout=15, throw_exception=False)
-    def get_response_body(self, response: Response) -> str:
+    def get_response_body(self, response: Response, call_timeout: float | None = None) -> str:
         """Get response body.
 
         Args:
@@ -287,8 +287,10 @@ class ChromeRemote:
         """
         try:
             request_id = response['meta']['requestId']
-            response_data = self._chrome_tab.call_method('Network.getResponseBody',
-                                                         requestId=request_id)
+            params = {'requestId': request_id}
+            if call_timeout is not None:
+                params['_timeout'] = call_timeout
+            response_data = self._chrome_tab.call_method('Network.getResponseBody', **params)
             if response_data['base64Encoded']:
                 response_data['body'] = base64.b64decode(response_data['body']).decode('utf-8')
 
@@ -346,7 +348,7 @@ class ChromeRemote:
             # Oops! Looks like an old browser, pass
             return False
 
-    def execute_script(self, expression: str) -> Any:
+    def execute_script(self, expression: str, timeout: float | None = None) -> Any:
         """Execute script.
 
         Args:
@@ -355,8 +357,10 @@ class ChromeRemote:
         Returns:
             Result value.
         """
-        eval_result = self._chrome_tab.Runtime.evaluate(expression=expression,
-                                                        returnByValue=True)
+        params = {'expression': expression, 'returnByValue': True}
+        if timeout is not None:
+            params['_timeout'] = timeout
+        eval_result = self._chrome_tab.Runtime.evaluate(**params)
         return eval_result['result'].get('value', None)
 
     def perform_click(self, dom_node: DOMNode, timeout: Optional[int] = None) -> None:

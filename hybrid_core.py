@@ -82,7 +82,7 @@ class Merger:
         if not matches:self.rows.append(row);return True
         target=matches[0]
         for extra in [*matches[1:],row]:
-            for field in ['phones','websites','rubrics','sources']:
+            for field in ['phones','websites','rubrics','sources','service_evidence']:
                 target[field]=list({json.dumps(x,sort_keys=True,ensure_ascii=False):x for x in [*target.get(field,[]),*extra.get(field,[])]}.values())
             for field in ['telegram','vk','address']:
                 if not target.get(field) and extra.get(field):target[field]=extra[field]
@@ -91,6 +91,7 @@ class Merger:
         return False
 
 def from_2gis(item,city=''):
+    from parser_2gis.contact_urls import messenger_kind
     identity=str(item.get('id') or '').split('_')[0]
     if not identity or not item.get('name'):return None
     contacts=[c for g in item.get('contact_groups',[]) or [] for c in g.get('contacts',[]) or [] if isinstance(c,dict)]
@@ -98,18 +99,20 @@ def from_2gis(item,city=''):
     websites=[];vk='';telegram=''
     for c in contacts:
         u=c.get('url') or c.get('value') or ''
-        if 'vk.com/' in u or 'vk.ru/' in u:vk=u
-        elif 't.me/' in u or 'telegram.me/' in u:telegram=u
-        elif c.get('type')=='website' and u:
+        kind=messenger_kind(u)
+        if kind=='vk':vk=u
+        elif kind=='telegram':telegram=u
+        elif c.get('type')=='website' and u and not kind:
             # 2GIS can return a displayed domain without an explicit scheme.
             candidate=str(u).strip()
             if not candidate.startswith(('http://', 'https://')):candidate='https://'+candidate
             websites.append(candidate)
     complete=bool(contacts)
     return normalize({'source_id':identity,'name':item['name'],'city':city,'address':item.get('address_name',''),
-        'sourceUrl':'https://2gis.ru/firm/'+identity,'phones':phones,'websites':websites,'vk':vk,'telegram':telegram,
-        'rubrics':item.get('rubrics',[]),'card_check':{'scope':'2gis_card','complete':complete,'websites':websites,
-        'has_website':any(c.get('type')=='website' and not any(x in str(c.get('url') or c.get('value') or '').lower() for x in ('t.me/', 'telegram.me/', 'vk.com/', 'vk.ru/')) for c in contacts),
+          'sourceUrl':item.get('renkai_page_url') or 'https://2gis.ru/firm/'+identity,'phones':phones,'websites':websites,'vk':vk,'telegram':telegram,
+          'rubrics':item.get('rubrics',[]),'service_evidence':item.get('renkai_service_evidence',[]),'card_check':{'scope':'2gis_card','complete':complete,'websites':websites,
+          'transport':item.get('renkai_transport','catalog_api'),
+          'has_website':bool(websites),
         'online':any('booking' in str(c).lower() or 'yclients' in str(c).lower() for c in contacts)}},'2gis',city)
 
 def archive_records(content, filename, query='', city=''):
