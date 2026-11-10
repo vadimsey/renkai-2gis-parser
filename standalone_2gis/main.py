@@ -68,6 +68,49 @@ class Api:
         from parser_2gis.cities import russian_cities
         return russian_cities()
 
+    def history_page(self, query='', status='all', page=1):
+        from history_view import query_history
+        return query_history(self.history, query, status, page)
+
+    def _save_path(self, filename, pattern):
+        import webview
+        window = getattr(self, 'window', None)
+        if window is None:
+            raise RuntimeError('Окно приложения ещё не готово.')
+        paths = window.create_file_dialog(webview.FileDialog.SAVE, save_filename=filename, file_types=(pattern,))
+        if not paths:
+            return None
+        path = Path(paths[0]).resolve()
+        source = self.history.path.resolve()
+        if path in (source, Path(str(source)+'-wal'), Path(str(source)+'-shm')):
+            raise ValueError('Выберите другой файл: рабочую базу нельзя перезаписывать.')
+        return path
+
+    def export_history(self, query='', status='all', format='html'):
+        from history_view import query_history, export_history
+        try:
+            if format not in ('html', 'csv', 'json'):
+                raise ValueError('Неизвестный формат')
+            result = query_history(self.history, query, status, all_rows=True)
+            path = self._save_path('RENKAI-cards-' + time.strftime('%Y%m%d') + '.' + format, format.upper() + ' (*.' + format + ')')
+            if path is None:
+                return {'ok': False, 'cancelled': True}
+            export_history(result['rows'], path, format)
+            return {'ok': True, 'path': str(path), 'count': result['total']}
+        except Exception as exc:
+            return {'ok': False, 'error': str(exc)}
+
+    def backup_history(self):
+        from history_view import backup_history
+        try:
+            path = self._save_path('RENKAI-history-' + time.strftime('%Y%m%d') + '.sqlite3', 'SQLite (*.sqlite3)')
+            if path is None:
+                return {'ok': False, 'cancelled': True}
+            backup_history(self.history, path)
+            return {'ok': True, 'path': str(path)}
+        except Exception as exc:
+            return {'ok': False, 'error': str(exc)}
+
     def start(self, city, city_code, limit, visible):
         if self.process and self.process.poll() is None:
             return {'ok': False, 'error': 'Поиск уже запущен.'}
@@ -150,6 +193,7 @@ def main():
         from parser_2gis.cities import russian_cities, resolve_city
         from parser_2gis.parser.page_data import snapshot_from_html
         from card_history import CardHistory
+        from history_view import query_history, export_history, backup_history
         from tempfile import TemporaryDirectory
         with TemporaryDirectory() as folder:
             history = CardHistory(Path(folder) / 'history.sqlite3')
@@ -159,14 +203,19 @@ def main():
             assert classify(bot) == 'telegram_bot'
             assert not history.remember(bot)
             assert history.count() == 1 and history.claim('2', 'another-run') == 'seen'
+            saved = query_history(history, all_rows=True)
+            assert saved['total'] == 1 and saved['counts']['qualified'] == 1
+            export_history(saved['rows'], Path(folder) / 'cards.html', 'html')
+            backup_history(history, Path(folder) / 'snapshot.sqlite3')
         assert snapshot_from_html('<html>missing data</html>', 'https://2gis.ru/') is None
         assert resolve_city('Нижний Новгород', 'krasnodar')['code'] == 'n_novgorod'
-        Path(sys.argv[2]).write_text('imports ok; history ok; cities=' + str(len(russian_cities())), encoding='utf-8')
+        Path(sys.argv[2]).write_text('imports ok; history ok; history browsing/export/backup ok; cities=' + str(len(russian_cities())), encoding='utf-8')
         return 0
     import webview
     api = Api()
     ui = (Path(sys._MEIPASS) / 'standalone_2gis' / 'ui' if getattr(sys, 'frozen', False) else Path(__file__).parent / 'ui') / 'index.html'
-    window = webview.create_window('Renkai Parser 0.1.6', ui.as_uri(), js_api=api, width=1360, height=900, min_size=(980, 720), background_color='#f4f4f5')
+    window = webview.create_window('Renkai Parser 0.1.7', ui.as_uri(), js_api=api, width=1360, height=900, min_size=(980, 720), background_color='#f4f4f5')
+    api.window = window
     window.events.closing += api.stop
     if len(sys.argv) >= 3 and sys.argv[1] == '--ui-smoke-test':
         report = Path(sys.argv[2])
