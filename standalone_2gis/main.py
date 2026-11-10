@@ -54,6 +54,9 @@ class Api:
     def __init__(self, base=None):
         self.base = Path(base or (Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'RENKAI-2GIS'))
         self.base.mkdir(parents=True, exist_ok=True)
+        from card_history import CardHistory
+        self.history = CardHistory(self.base / 'history.sqlite3')
+        self.history.import_runs([self.base / 'runs'])
         self.run_dir = None
         self.process = None
 
@@ -79,7 +82,8 @@ class Api:
             return {'ok': False, 'error': 'Введите положительное количество или оставьте поле пустым для поиска всех доступных карточек.'}
         self.run_dir = self.base / 'runs' / (time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:6])
         self.run_dir.mkdir(parents=True)
-        config = {'city': city, 'city_code': city_code, 'pool': limit, 'browser_visible': bool(visible), 'exclude': []}
+        config = {'city': city, 'city_code': city_code, 'pool': limit, 'browser_visible': bool(visible), 'exclude': [],
+                  'history_path': str(self.history.path), 'history_import_roots': [str(self.base / 'runs')]}
         path = self.run_dir / 'config.json'
         path.write_text(json.dumps(config, ensure_ascii=False), encoding='utf-8')
         command = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, str(Path(__file__).resolve())]
@@ -92,7 +96,7 @@ class Api:
 
     def state(self):
         if not self.run_dir:
-            return {'status': 'idle', 'rows': [], 'counts': {}}
+            return {'status': 'idle', 'rows': [], 'counts': {}, 'history': {'total':self.history.count(), 'skipped':0}}
         worker = read_json(self.run_dir / 'worker.json', {})
         rows = read_json(self.run_dir / 'collected.json', [])
         if not isinstance(rows, list): rows = []
@@ -104,7 +108,8 @@ class Api:
         source = worker.get('sources', {}).get('2gis', {})
         message = source.get('message') or ('Открываем 2ГИС…' if running else 'Рабочий процесс завершился без отчёта.')
         if source.get('status') == 'blocked': status = 'blocked'
-        return {'status': status, 'running': running, 'message': message, 'counts': counts, 'rows': accepted, 'directory': str(self.run_dir)}
+        return {'status': status, 'running': running, 'message': message, 'counts': counts, 'rows': accepted, 'directory': str(self.run_dir),
+                'history': {'total':self.history.count(), 'skipped':source.get('history_skipped', 0)}}
 
     def stop(self):
         if self.run_dir and self.process and self.process.poll() is None:
@@ -138,14 +143,20 @@ def main():
         from parser_2gis.parser import get_parser
         from parser_2gis.cities import russian_cities, resolve_city
         from parser_2gis.parser.page_data import snapshot_from_html
+        from card_history import CardHistory
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            history = CardHistory(Path(folder) / 'history.sqlite3')
+            assert history.remember({'source':'2gis', 'source_id':'1', 'name':'Smoke test'})
+            assert CardHistory(history.path).claim('1', 'another-run') == 'seen'
         assert snapshot_from_html('<html>missing data</html>', 'https://2gis.ru/') is None
         assert resolve_city('Нижний Новгород', 'krasnodar')['code'] == 'n_novgorod'
-        Path(sys.argv[2]).write_text('imports ok; cities=' + str(len(russian_cities())), encoding='utf-8')
+        Path(sys.argv[2]).write_text('imports ok; history ok; cities=' + str(len(russian_cities())), encoding='utf-8')
         return 0
     import webview
     api = Api()
     ui = (Path(sys._MEIPASS) / 'standalone_2gis' / 'ui' if getattr(sys, 'frozen', False) else Path(__file__).parent / 'ui') / 'index.html'
-    window = webview.create_window('Renkai Parser 0.1.4', ui.as_uri(), js_api=api, width=1360, height=900, min_size=(980, 720), background_color='#f4f4f5')
+    window = webview.create_window('Renkai Parser 0.1.5', ui.as_uri(), js_api=api, width=1360, height=900, min_size=(980, 720), background_color='#f4f4f5')
     window.events.closing += api.stop
     if len(sys.argv) >= 3 and sys.argv[1] == '--ui-smoke-test':
         report = Path(sys.argv[2])
@@ -167,7 +178,8 @@ def main():
                     input.value = 'Краснодар'; input.dispatchEvent(new Event('input'));
                     return JSON.stringify({title:document.querySelector('h1').textContent,
                         cities:document.querySelectorAll('#cityList option').length,
-                        testedCityCode:cityCode,start:!!document.querySelector('#start'),export:!!document.querySelector('#export')});
+                        testedCityCode:cityCode,start:!!document.querySelector('#start'),export:!!document.querySelector('#export'),
+                        historyCounter:!!document.querySelector('#historySkipped')});
                 })()""")
                 if json.loads(result)['testedCityCode'] != 'n_novgorod':
                     raise RuntimeError('City selection failed in the packaged desktop UI')

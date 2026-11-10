@@ -40,6 +40,9 @@ def test_actual_city_ui_and_backend(tmp_path, monkeypatch):
             import json
             config = json.loads((api.run_dir / 'config.json').read_text(encoding='utf-8'))
             assert config['city'] == 'Тула' and config['city_code'] == 'tula'
+            page.evaluate("render({status:'done', rows:[], counts:{all:2,qualified:1,website:1}, history:{total:10,skipped:3}})")
+            assert page.locator('#historySkipped').inner_text() == '3'
+            assert 'Всего в базе: 10' in page.locator('#progressCount').inner_text()
             assert not errors, errors
             page.screenshot(path=str(tmp_path / 'renkai-cities.png'), full_page=True)
         finally:

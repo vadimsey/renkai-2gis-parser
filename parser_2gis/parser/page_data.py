@@ -233,6 +233,9 @@ def parse_page_data(parser, writer):
             if cancelled(parser):
                 return
             seen.add(firm_id)
+            skip_known = getattr(parser, 'renkai_skip_known', None)
+            if skip_known and skip_known(firm_id):
+                continue
             progress(parser, 'Открываем карточку %s на странице %s; получено %s.' % (len(seen), page, count))
             if parser._options.delay_between_clicks:
                 time.sleep(parser._options.delay_between_clicks / 1000)

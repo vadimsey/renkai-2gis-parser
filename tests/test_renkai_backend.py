@@ -95,7 +95,7 @@ def test_real_engine_worker_filter_and_export(tmp_path, monkeypatch):
         return parser
     monkeypatch.setattr('parser_2gis.parser.get_parser', factory)
     monkeypatch.setattr('site_audit_browser.chrome_path', lambda: 'C:/test-chrome.exe')
-    worker = Worker({'city': 'Нижний Новгород', 'city_code': 'krasnodar', 'pool': None}, tmp_path)
+    worker = Worker({'city': 'Нижний Новгород', 'city_code': 'krasnodar', 'pool': None, 'history_path':str(tmp_path / 'history.sqlite3')}, tmp_path)
     assert worker.run() == 0
     assert captured['remote'].clicked == [0, 1, 2, 3]
     assert captured['remote'].closed
@@ -109,6 +109,16 @@ def test_real_engine_worker_filter_and_export(tmp_path, monkeypatch):
     rows = json.loads((tmp_path / 'export/companies.json').read_text(encoding='utf-8'))
     assert len(rows) == 3 and rows[0]['name'] == 'ТЕСТ Химчистка диванов'
     assert all(not r['websites'] for r in rows)
+    # A fresh worker shares the DB and must skip even the excluded website card.
+    again = tmp_path / 'again'; again.mkdir()
+    next_worker = Worker({**worker.config, 'pool':None}, again)
+    assert next_worker.run() == 0
+    assert captured['remote'].clicked == []
+    repeated = json.loads((again / 'worker.json').read_text(encoding='utf-8'))
+    assert repeated['status'] == 'done'
+    assert repeated['candidates'] == 0
+    assert repeated['sources']['2gis']['history_skipped'] == 4
+    assert next_worker.history.count() == 4
 
 
 def test_real_engine_document_error_is_reported(tmp_path, monkeypatch):
@@ -120,7 +130,7 @@ def test_real_engine_document_error_is_reported(tmp_path, monkeypatch):
         return parser
     monkeypatch.setattr('parser_2gis.parser.get_parser', factory)
     monkeypatch.setattr('site_audit_browser.chrome_path', lambda: 'C:/test-chrome.exe')
-    worker = Worker({'city': 'Краснодар', 'city_code': 'krasnodar', 'pool': 1}, tmp_path)
+    worker = Worker({'city': 'Краснодар', 'city_code': 'krasnodar', 'pool': 1, 'history_path':str(tmp_path / 'history.sqlite3')}, tmp_path)
     assert worker.run() == 1
     state = json.loads((tmp_path / 'worker.json').read_text(encoding='utf-8'))
     assert state['status'] == 'error'

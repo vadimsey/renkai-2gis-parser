@@ -2,6 +2,7 @@
 import json
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from hybrid_core import Merger, from_2gis
@@ -17,12 +18,16 @@ class Worker:
         self.config, self.folder = config, Path(folder)
         self.merger = Merger(config.get('exclude', []))
         self.source = {'name': '2ГИС', 'status': 'running', 'count': 0, 'message': 'Ищем карточки 2ГИС'}
+        self.history = None
+        self.history_owner = uuid.uuid4().hex
 
     def cancelled(self):
         return (self.folder / 'cancel').exists()
 
     def checkpoint(self, status='collecting'):
         self.source['count'] = len(self.merger.rows)
+        if self.history:
+            self.source['history_total'] = self.history.count()
         write_json(self.folder / 'collected.json', self.merger.rows)
         write_json(self.folder / 'worker.json', {
             'status': status, 'seen': self.merger.seen, 'candidates': len(self.merger.rows),
@@ -39,13 +44,25 @@ class Worker:
         for item in (doc.get('result') or {}).get('items', []):
             row = from_2gis(item, self.config['city']) if isinstance(item, dict) else None
             if row:
-                self.merger.add(row)
+                # Save every read card, including websites and excluded contacts.
+                if self.history is None or self.history.remember(row):
+                    self.merger.add(row)
         self.source['message'] = 'Получено карточек: ' + str(len(self.merger.rows))
         self.checkpoint()
 
     def progress(self, message):
+        if self.source.get('history_skipped'):
+            message += ' Пропущено из базы: %s.' % self.source['history_skipped']
         self.source['message'] = message
         self.checkpoint()
+
+    def skip_known_card(self, identity):
+        result = self.history.claim(identity, self.history_owner)
+        if result == 'new':
+            return False
+        key = 'history_skipped' if result == 'seen' else 'history_busy'
+        self.source[key] = self.source.get(key, 0) + 1
+        return True
 
     def check_access(self, remote, response):
         def page_blocked():
@@ -75,6 +92,11 @@ class Worker:
                 self.source.update(status='cancelled', message='Остановлено')
                 self.checkpoint('cancelled')
                 return 0
+            from card_history import CardHistory, default_history_path
+            self.history = CardHistory(self.config.get('history_path') or default_history_path())
+            roots = self.config.get('history_import_roots', [str(self.history.path.parent / 'runs')])
+            self.source['history_imported'] = self.history.import_runs(roots)
+            self.source.update(history_skipped=0, history_busy=0)
             from parser_2gis.chrome import ChromeOptions
             from parser_2gis.parser import get_parser, ParserOptions
             from site_audit_browser import chrome_path
@@ -93,18 +115,22 @@ class Worker:
             parser.renkai_cancelled = self.cancelled
             parser.renkai_progress = self.progress
             parser.renkai_page_data = True
+            parser.renkai_skip_known = self.skip_known_card
             parser.parse(self)
             self.source['skipped'] = int(getattr(parser, 'renkai_skipped', 0))
             if self.cancelled():
                 self.source.update(status='cancelled', message='Остановлено')
                 status = 'cancelled'
-            elif not self.merger.rows:
+            elif not self.merger.rows and not (self.source['history_skipped'] or self.source['history_busy']):
                 self.source.update(status='error', message=getattr(parser, 'renkai_stop_reason', '') or 'Карточки не получены. Проверьте доступ к 2ГИС или изменение разметки.')
                 status = 'error'
             else:
                 message = getattr(parser, 'renkai_stop_reason', '') or 'Получено уникальных карточек: %s.' % len(self.merger.rows)
                 if self.source['skipped']:
                     message += ' Недоступно карточек: %s; они пропущены.' % self.source['skipped']
+                message += ' Пропущено из базы: %s.' % self.source['history_skipped']
+                if self.source['history_busy']:
+                    message += ' Уже проверяются другим запуском: %s.' % self.source['history_busy']
                 self.source.update(status='done', message=message)
                 status = 'done'
         except AccessBlocked as exc:
@@ -118,6 +144,8 @@ class Worker:
                 self.source.update(status='error', message='Не удалось получить карточки 2ГИС: ' + message[:200])
             status = 'error'
         finally:
+            if self.history:
+                self.history.release(self.history_owner)
             if parser:
                 try:
                     parser.close()

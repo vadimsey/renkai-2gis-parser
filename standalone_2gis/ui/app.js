@@ -8,8 +8,9 @@ function render(s) {
   document.querySelector('.status-pill').classList.toggle('running', running);
   document.querySelector('.status-pill').classList.toggle('issue', ['error','blocked'].includes(s.status));
   $('message').textContent = s.message || 'После запуска здесь появится статус поиска. Отсутствие сайта проверяется только по карточке 2ГИС.';
-  for (const id of ['all','qualified','website','unverified']) $(id).textContent = counts[id] ?? 0;
-  $('progressCount').textContent = `Карточек получено: ${counts.all ?? 0}`;
+  for (const id of ['all','qualified','website']) $(id).textContent = counts[id] ?? 0;
+  $('historySkipped').textContent = s.history?.skipped ?? 0;
+  $('progressCount').textContent = `Новых карточек: ${counts.all ?? 0} · Всего в базе: ${s.history?.total ?? 0}`;
   $('progressTrack').classList.toggle('running', running); $('start').disabled = running; $('stop').disabled = !running; $('export').disabled = !rows.length;
   $('count').textContent = $('navCount').textContent = rows.length;
   $('rows').innerHTML = rows.length ? rows.map(r => {
