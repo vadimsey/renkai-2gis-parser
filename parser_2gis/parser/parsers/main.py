@@ -36,6 +36,8 @@ class MainParser:
         # Optional RENKAI callbacks for progress, cancellation and access checks.
         self.renkai_access_check = None
         self.renkai_cancelled = None
+        self.renkai_progress = None
+        self.renkai_stop_reason = ''
 
         # "Catalog Item Document" response pattern.
         self._item_response_pattern = r'https://catalog\.api\.2gis.[^/]+/.*/items/byid'
@@ -103,10 +105,13 @@ class MainParser:
         '''
         self._chrome_remote.add_start_script(xhr_script)
 
-    @wait_until_finished(timeout=120)
+    @wait_until_finished(timeout=10, throw_exception=False)
     def _wait_requests_finished(self) -> bool:
-        """Wait for all pending requests."""
-        return self._chrome_remote.execute_script('window.openHTTPs == 0')
+        """Give the page time to settle without waiting on background traffic."""
+        if self.renkai_cancelled and self.renkai_cancelled():
+            return True
+        return self._chrome_remote.execute_script(
+            'document.readyState !== "loading" && (window.openHTTPs === undefined || window.openHTTPs === 0)')
 
     def _get_available_pages(self) -> dict[int, DOMNode]:
         """Get available pages to navigate."""
@@ -189,19 +194,28 @@ class MainParser:
 
         # This wrapper is not necessary, but I'd like to be sure
         # we haven't gathered links from old DOM somehow.
-        @wait_until_finished(timeout=10, throw_exception=False)
-        def get_unique_links() -> list[DOMNode]:
-            links = self._get_links()
-            link_addresses = set(x.attributes['href'] for x in links)
-            if link_addresses & visited_links:
-                return []
+        def link_key(link: DOMNode) -> str:
+            href = link.attributes.get('href', '')
+            firm = re.search(r'/firm/(\d+)', href)
+            return firm.group(1) if firm else href.split('?', 1)[0]
 
-            visited_links.update(link_addresses)
+        def get_unique_links() -> list[DOMNode]:
+            seen = set()
+            links = []
+            for link in self._get_links(timeout=10) or []:
+                key = link_key(link)
+                if key and key not in visited_links and key not in seen:
+                    seen.add(key)
+                    links.append(link)
             return links
 
         while True:
             # Wait all 2GIS requests get finished
             self._wait_requests_finished()
+            if self.renkai_cancelled and self.renkai_cancelled():
+                return
+            if self.renkai_access_check:
+                self.renkai_access_check(self._chrome_remote, document_response)
 
             # Gather links to be clicked
             links = get_unique_links()
@@ -209,13 +223,31 @@ class MainParser:
             # We should parse the page if we are not walking
             if not walk_page_number:
                 # Iterate through gathered links
+                failures = 0
                 for link in links:
                     if self.renkai_cancelled and self.renkai_cancelled():
                         return
-                    for _ in range(1):
+                    key = link_key(link)
+                    visited_links.add(key)
+                    if self.renkai_progress:
+                        self.renkai_progress('Проверяем карточку %s; получено %s.' % (len(visited_links), collected_records))
+                    resp = None
+                    # 2GIS re-renders the list after a card opens, invalidating
+                    # backend node IDs. Resolve a fresh node for each click.
+                    for attempt in range(2):
+                        fresh = next((candidate for candidate in (self._get_links(timeout=3) or [])
+                                      if link_key(candidate) == key), None)
+                        if fresh is None:
+                            break
                         # Click the link to provoke request
                         # with a auth key and secret arguments
-                        self._chrome_remote.perform_click(link)
+                        try:
+                            self._chrome_remote.perform_click(fresh)
+                        except Exception as exc:
+                            if attempt == 0 and 'No node with given id found' in str(exc):
+                                continue
+                            logger.warning('Не удалось открыть карточку: %s', exc)
+                            break
 
                         # Delay between clicks, could be usefull if
                         # 2GIS's anti-bot service become more strict.
@@ -223,14 +255,20 @@ class MainParser:
                             self._chrome_remote.wait(self._options.delay_between_clicks / 1000)
 
                         # Gather response and collect useful payload.
-                        resp = self._chrome_remote.wait_response(self._item_response_pattern)
+                        resp = self._chrome_remote.wait_response(self._item_response_pattern, timeout=15)
 
                         if resp and resp.get('status') in (403, 429):
                             raise RuntimeError('2ГИС ограничил доступ (HTTP %s)' % resp['status'])
 
-                        # If request is failed - repeat, otherwise go further.
-                        if resp and resp['status'] >= 0:
-                            break
+                        if resp and resp.get('status') == -1:
+                            error = re.search(r'net::[A-Z0-9_]+', resp.get('statusText') or '')
+                            code = ' (' + error.group(0) + ')' if error else ''
+                            self.renkai_stop_reason = ('Не удалось соединиться с каталогом 2ГИС' + code +
+                                '. Проверьте подключение к catalog.api.2gis.ru и повторите позже.')
+                            return
+
+                        # Do not repeatedly request a card when the source fails.
+                        break
 
                     # Get response body data
                     if resp and resp['status'] >= 0:
@@ -248,8 +286,14 @@ class MainParser:
                         # Write API document into a file
                         writer.write(doc)
                         collected_records += 1
+                        failures = 0
                     else:
                         logger.error('Данные не получены, пропуск позиции.')
+                        failures += 1
+                        if failures >= 3:
+                            self.renkai_stop_reason = ('2ГИС не вернул данные трёх карточек подряд. '
+                                                      'Проверьте доступ в видимом браузере и повторите позже.')
+                            return
 
                     # We've reached our limit, bail
                     if collected_records >= self._options.max_records:

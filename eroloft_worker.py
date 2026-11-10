@@ -29,7 +29,7 @@ class Worker:
             'status': status, 'seen': self.merger.seen, 'candidates': len(self.merger.rows),
             'query_errors': int(self.source['status'] in ('error', 'blocked')),
             'sources': {'2gis': self.source}, 'updated': time.time(),
-            'note': 'Данные получены из карточек 2ГИС; наличие сайта проверяется отдельно.'})
+            'note': 'Источник: карточки 2ГИС; наличие сайта проверяется по полученным контактам.'})
 
     def write(self, doc):
         """Receive the original parser's by-id catalog document."""
@@ -42,6 +42,10 @@ class Worker:
             if row:
                 self.merger.add(row)
         self.source['message'] = 'Получено карточек: ' + str(len(self.merger.rows))
+        self.checkpoint()
+
+    def progress(self, message):
+        self.source['message'] = message
         self.checkpoint()
 
     def check_access(self, remote, response):
@@ -88,15 +92,16 @@ class Worker:
             parser = get_parser(url, options, ParserOptions(max_records=max_records, delay_between_clicks=1000))
             parser.renkai_access_check = self.check_access
             parser.renkai_cancelled = self.cancelled
+            parser.renkai_progress = self.progress
             parser.parse(self)
             if self.cancelled():
                 self.source.update(status='cancelled', message='Остановлено')
                 status = 'cancelled'
             elif not self.merger.rows:
-                self.source.update(status='error', message='Карточки не получены. Проверьте доступ к 2ГИС или изменение разметки.')
+                self.source.update(status='error', message=getattr(parser, 'renkai_stop_reason', '') or 'Карточки не получены. Проверьте доступ к 2ГИС или изменение разметки.')
                 status = 'error'
             else:
-                self.source.update(status='done', message='Карточки получены; проверяем сайт и услугу.')
+                self.source.update(status='done', message=getattr(parser, 'renkai_stop_reason', '') or 'Карточки получены; проверяем сайт и услугу.')
                 status = 'done'
         except AccessBlocked as exc:
             self.source.update(status='blocked', message=str(exc))
@@ -115,7 +120,7 @@ class Worker:
                 except Exception:
                     pass
         self.checkpoint(status)
-        return 0
+        return 1 if status == 'error' else 0
 
 
 def run(config_path):
