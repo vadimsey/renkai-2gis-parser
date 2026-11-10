@@ -11,12 +11,32 @@ def row(**changes):
     return value
 
 
-def test_filter_rejects_site_and_incomplete_cards():
+def test_filter_accepts_all_collected_cards_without_detected_site():
     assert classify(row()) == 'qualified'
     assert classify(row(websites=['https://example.com'])) == 'website'
-    assert classify(row(card_check={'scope':'2gis_card', 'complete':False})) == 'unverified'
-    assert classify(row(name='Уборка', rubrics=['Клининг'])) == 'unverified'
-    assert classify(row(name='Многопрофильная компания', rubrics=['Чистка ковров', 'Мягкая мебель'])) == 'unverified'
+    assert classify(row(card_check={'scope':'2gis_card', 'complete':False})) == 'qualified'
+    assert classify(row(card_check={})) == 'qualified'
+    assert classify(row(name='Уборка', rubrics=['Клининг'])) == 'qualified'
+    assert classify(row(name='Многопрофильная компания', rubrics=['Чистка ковров', 'Мягкая мебель'])) == 'qualified'
+    assert classify(row(card_check={'complete': False, 'has_website': True})) == 'website'
+    assert classify(row(card_check={'websites': ['https://example.test']})) == 'website'
+
+
+def test_state_and_export_include_previously_unverified_cards(tmp_path, monkeypatch):
+    rows = [row(name='Уборка', rubrics=['Клининг']),
+            row(name='Неполная карточка', phones=['+79180000001'], card_check={'complete':False}, sourceUrl='https://2gis.ru/firm/70000001000000001'),
+            row(name='С сайтом', websites=['https://example.test'])]
+    (tmp_path / 'collected.json').write_text(json.dumps(rows, ensure_ascii=False), encoding='utf-8')
+    (tmp_path / 'worker.json').write_text('{"status":"done"}', encoding='utf-8')
+    api = Api(tmp_path); api.run_dir = tmp_path
+    state = api.state()
+    assert state['counts'] == {'all':3, 'qualified':2, 'website':1, 'unverified':0}
+    monkeypatch.setattr('standalone_2gis.main.os.startfile', lambda path: None)
+    assert api.export()['ok']
+    exported = json.loads((tmp_path / 'export/companies.json').read_text(encoding='utf-8'))
+    assert [r['name'] for r in exported] == ['Уборка', 'Неполная карточка']
+    html = (tmp_path / 'export/companies.html').read_text(encoding='utf-8')
+    assert len(parse(html, 'companies.html')['records']) == 2
 
 
 def test_exports_include_importable_lead_data(tmp_path):

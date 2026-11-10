@@ -17,14 +17,10 @@ if str(ROOT) not in sys.path:
 
 def classify(row):
     card = row.get('card_check') or {}
-    if card.get('scope') != '2gis_card' or card.get('complete') is not True:
-        return 'unverified'
     if row.get('websites') or card.get('websites') or card.get('has_website'):
         return 'website'
-    from parser_2gis.furniture import furniture_service
-    if not furniture_service([row.get('name'), *row.get('rubrics', []),
-                              *(e.get('text') for e in row.get('service_evidence', []))]):
-        return 'unverified'
+    # User-selected rule: every collected card with no detected website qualifies,
+    # including incomplete cards and cards without explicit service evidence.
     return 'qualified'
 
 
@@ -48,7 +44,7 @@ def export_rows(rows, directory):
     records = []
     for row in rows:
         item = normalize(row)
-        item.update(phones=json.dumps(item['phones'], ensure_ascii=False), original_site='', audit_note='Сайт не указан в полученной карточке 2ГИС; внешний поиск не выполнялся.', skip_reason='', sources=row.get('sources', []), websites=[])
+        item.update(phones=json.dumps(item['phones'], ensure_ascii=False), original_site='', audit_note='Сайт не обнаружен в полученных данных 2ГИС; полнота контактов и услуга не являются условиями отбора. Внешний поиск не выполнялся.', skip_reason='', sources=row.get('sources', []), websites=[])
         records.append(item)
     document = company_html(records, title='RENKAI / ХИМЧИСТКА МЕБЕЛИ', subtitle='Сайты в карточках 2ГИС не указаны', filename='companies.html')
     (directory / 'companies.html').write_bytes(document.body)
@@ -149,7 +145,7 @@ def main():
     import webview
     api = Api()
     ui = (Path(sys._MEIPASS) / 'standalone_2gis' / 'ui' if getattr(sys, 'frozen', False) else Path(__file__).parent / 'ui') / 'index.html'
-    window = webview.create_window('Renkai Parser 0.1.3', ui.as_uri(), js_api=api, width=1360, height=900, min_size=(980, 720), background_color='#f4f4f5')
+    window = webview.create_window('Renkai Parser 0.1.4', ui.as_uri(), js_api=api, width=1360, height=900, min_size=(980, 720), background_color='#f4f4f5')
     window.events.closing += api.stop
     if len(sys.argv) >= 3 and sys.argv[1] == '--ui-smoke-test':
         report = Path(sys.argv[2])

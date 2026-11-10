@@ -103,11 +103,12 @@ def test_real_engine_worker_filter_and_export(tmp_path, monkeypatch):
     api.run_dir = tmp_path
     state = api.state()
     assert state['status'] == 'done'
-    assert state['counts'] == {'all': 4, 'qualified': 1, 'website': 1, 'unverified': 2}
+    assert state['counts'] == {'all': 4, 'qualified': 3, 'website': 1, 'unverified': 0}
     assert state['rows'][0]['city'] == 'Нижний Новгород'
     export_rows(state['rows'], tmp_path / 'export')
     rows = json.loads((tmp_path / 'export/companies.json').read_text(encoding='utf-8'))
-    assert len(rows) == 1 and rows[0]['name'] == 'ТЕСТ Химчистка диванов'
+    assert len(rows) == 3 and rows[0]['name'] == 'ТЕСТ Химчистка диванов'
+    assert all(not r['websites'] for r in rows)
 
 
 def test_real_engine_document_error_is_reported(tmp_path, monkeypatch):
