@@ -74,7 +74,7 @@ class Api:
 
     def _save_path(self, filename, pattern):
         import webview
-        window = getattr(self, 'window', None)
+        window = getattr(self, '_window', None)
         if window is None:
             raise RuntimeError('Окно приложения ещё не готово.')
         paths = window.create_file_dialog(webview.FileDialog.SAVE, save_filename=filename, file_types=(pattern,))
@@ -179,6 +179,40 @@ class Api:
             return {'ok': False, 'error': str(exc)}
 
 
+class DesktopBridge:
+    """Expose only commands: pywebview recursively inspects public attributes.
+
+    Exposing Api itself also exposed its window, native controls and processes.
+    Accessing those properties during bridge injection can block the UI thread.
+    """
+    def __init__(self, api):
+        self._api = api
+
+    def cities(self):
+        return self._api.cities()
+
+    def start(self, city, city_code, limit, visible):
+        return self._api.start(city, city_code, limit, visible)
+
+    def state(self):
+        return self._api.state()
+
+    def stop(self):
+        return self._api.stop()
+
+    def export(self):
+        return self._api.export()
+
+    def history_page(self, query='', status='all', page=1):
+        return self._api.history_page(query, status, page)
+
+    def export_history(self, query='', status='all', format='html'):
+        return self._api.export_history(query, status, format)
+
+    def backup_history(self):
+        return self._api.backup_history()
+
+
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == '--parser-worker':
         try:
@@ -212,10 +246,11 @@ def main():
         Path(sys.argv[2]).write_text('imports ok; history ok; history browsing/export/backup ok; cities=' + str(len(russian_cities())), encoding='utf-8')
         return 0
     import webview
+    ui_started = time.monotonic()
     api = Api()
     ui = (Path(sys._MEIPASS) / 'standalone_2gis' / 'ui' if getattr(sys, 'frozen', False) else Path(__file__).parent / 'ui') / 'index.html'
-    window = webview.create_window('Renkai Parser 0.1.7', ui.as_uri(), js_api=api, width=1360, height=900, min_size=(980, 720), background_color='#f4f4f5')
-    api.window = window
+    window = webview.create_window('Renkai Parser 0.1.8', ui.as_uri(), js_api=DesktopBridge(api), width=1360, height=900, min_size=(980, 720), background_color='#f4f4f5', hidden='--ui-smoke-test' in sys.argv)
+    api._window = window
     window.events.closing += api.stop
     if len(sys.argv) >= 3 and sys.argv[1] == '--ui-smoke-test':
         report = Path(sys.argv[2])
@@ -242,6 +277,19 @@ def main():
                 })()""")
                 if json.loads(result)['testedCityCode'] != 'n_novgorod':
                     raise RuntimeError('City selection failed in the packaged desktop UI')
+                window.evaluate_js("document.querySelector('a[href=\"#database\"]').click()")
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if window.evaluate_js("document.querySelector('#databaseView').dataset.loaded === 'true'"):
+                        break
+                    time.sleep(.1)
+                else:
+                    raise RuntimeError('Database did not load through the native bridge')
+                details = json.loads(result)
+                details['databaseLoaded'] = True
+                details['readySeconds'] = round(time.monotonic() - ui_started, 3)
+                details['bridgeMethods'] = window.evaluate_js('Object.keys(window.pywebview.api)')
+                result = json.dumps(details, ensure_ascii=False)
                 report.write_text(result, encoding='utf-8')
             except Exception:
                 report.write_text(traceback.format_exc(), encoding='utf-8')

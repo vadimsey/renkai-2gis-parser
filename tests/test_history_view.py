@@ -72,11 +72,11 @@ def test_backup_includes_wal_and_protects_live_database(tmp_path):
 def test_bridge_save_cancel_filter_and_backup(tmp_path):
     api = Api(tmp_path)
     populate(api.history, 53)
-    api.window = SimpleNamespace(create_file_dialog=lambda *a, **kw: None)
+    api._window = SimpleNamespace(create_file_dialog=lambda *a, **kw: None)
     assert api.export_history()['cancelled']
     assert api.backup_history()['cancelled']
     path = tmp_path / 'filtered.json'
-    api.window.create_file_dialog = lambda *a, **kw: [str(path)]
+    api._window.create_file_dialog = lambda *a, **kw: [str(path)]
     result = api.export_history('', 'website', 'json')
     assert result['ok'] and result['count'] == 26
     assert len(json.loads(path.read_text(encoding='utf-8'))) == 26
@@ -84,7 +84,7 @@ def test_bridge_save_cancel_filter_and_backup(tmp_path):
     assert api.backup_history()['ok']
     with sqlite3.connect(path) as db:
         assert db.execute('SELECT COUNT(*) FROM cards').fetchone()[0] == 53
-    api.window.create_file_dialog = lambda *a, **kw: [str(api.history.path)]
+    api._window.create_file_dialog = lambda *a, **kw: [str(api.history.path)]
     assert not api.export_history()['ok']
     assert not api.backup_history()['ok']
     assert api.history.count() == 53

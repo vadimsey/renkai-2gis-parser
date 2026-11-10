@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id);
 let apiReady = false;
+let refreshPending = false, lastRowsKey = null;
 const labels = {idle:'Ожидает запуска', collecting:'Идёт поиск', done:'Поиск завершён', error:'Ошибка источника', blocked:'Доступ ограничен', cancelled:'Остановлено'};
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function render(s) {
@@ -13,12 +14,21 @@ function render(s) {
   $('progressCount').textContent = `Новых карточек: ${counts.all ?? 0} · Всего в базе: ${s.history?.total ?? 0} · Ботов исключено: ${s.telegram_bots_excluded ?? 0}`;
   $('progressTrack').classList.toggle('running', running); $('start').disabled = running; $('stop').disabled = !running; $('export').disabled = !rows.length;
   $('count').textContent = $('navCount').textContent = rows.length;
+  const rowsKey = JSON.stringify(rows);
+  if (rowsKey === lastRowsKey) return;
+  lastRowsKey = rowsKey;
   $('rows').innerHTML = rows.length ? rows.map(r => {
     const source = /^https:\/\/2gis\.ru\/(?:[^/]+\/)?firm\/\d+(?:[/?#].*)?$/i.test(r.sourceUrl || '') ? `<a href="${esc(r.sourceUrl)}" target="_blank" rel="noopener noreferrer">2ГИС ↗</a>` : '—';
     return `<div class="row"><div><b>${esc(r.name)}</b><small>${esc([r.city,r.address].filter(Boolean).join(' · '))}</small></div><div>${esc((r.phones || []).join(' · ') || r.telegram || r.vk || 'Контакт не указан')}</div><div>${source}</div></div>`;
   }).join('') : '<div class="empty"><span class="empty-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 4 4"/></svg></span><b>Подходящих карточек пока нет</b><p>Статус поиска указан выше.</p></div>';
 }
-async function refresh() { if (!apiReady) return; try { render(await window.pywebview.api.state()); } catch(e) { $('message').textContent = 'Не удалось получить статус: ' + e; } }
+async function refresh() {
+  if (!apiReady || refreshPending) return;
+  refreshPending = true;
+  try { render(await window.pywebview.api.state()); }
+  catch(e) { $('message').textContent = 'Не удалось получить статус: ' + e; }
+  finally { refreshPending = false; }
+}
 window.addEventListener('pywebviewready', async () => {
   apiReady = true;
   try {
